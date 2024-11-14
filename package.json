@@ -1,0 +1,19 @@
+{
+  "name": "dvm",
+  "module": "index.js",
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "@types/dockerode": "^3.3.31",
+    "discord.js": "^14.16.3",
+    "dockerode": "^4.0.2",
+    "dotenv": "^16.4.5"
+  },
+  "scripts": {
+    "start": "tsc && node ."
+  }
+}
