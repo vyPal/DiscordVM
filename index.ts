@@ -3,7 +3,6 @@ import {
   Client,
   Events,
   GatewayIntentBits,
-  Message,
   PermissionsBitField,
 } from "discord.js";
 import Docker from "dockerode";
@@ -82,7 +81,7 @@ docker.listContainers({ all: true }, async function (err, containers) {
           >();
 
           // Send buffer content if it exceeds 2000 characters or after a set interval (e.g., 500 ms)
-          function flushChannelBuffer(chan: any, channel: any) {
+          async function flushChannelBuffer(chan: any, channel: any) {
             if (channelBuffers.has(chan.channelId)) {
               const { buffer } = channelBuffers.get(chan.channelId)!;
 
@@ -90,25 +89,19 @@ docker.listContainers({ all: true }, async function (err, containers) {
 
               // Send or edit the message based on message ID
               if (chan.messageId !== "") {
-                channel.messages
-                  .fetch(chan.messageId)
-                  .then((msg: Message) => msg.edit("```" + buffer + "```"))
-                  .catch(console.error);
+                let ch = await channel.messages.fetch(chan.messageId);
+                if (ch.content === buffer) return;
+                await ch.edit("```" + buffer + "```");
               } else {
-                channel
-                  .send("```" + buffer + "```")
-                  .then((msg: any) => {
-                    chan.messageId = msg.id;
-                  })
-                  .catch(console.error);
+                let msg = await channel.send("```" + buffer + "```");
+                chan.messageId = msg.id;
               }
-
-              // Clear buffer after sending
-              channelBuffers.set(chan.channelId, { buffer: "", timer: null });
             }
+            return chan;
           }
 
-          stream.on("data", function (chunk: any) {
+          stream.on("data", async function (chunk: any) {
+            console.log(chunk);
             // Clean up the chunk
             chunk = chunk.replace(
               /(\x1b\[[0-9;?]*[A-Za-z])|(\x1b\][^\x07]*\x07)|(\x1b[>=])/g,
@@ -134,14 +127,16 @@ docker.listContainers({ all: true }, async function (err, containers) {
               const { buffer, timer } = channelBuffers.get(chan.channelId)!;
 
               // Append chunk to buffer if it doesn't exceed 2000 characters
-              if (buffer.length + chunk.length < 2000) {
+              if (buffer.length + chunk.length + 6 < 2000) {
                 channelBuffers.set(chan.channelId, {
                   buffer: buffer + chunk,
                   timer,
                 });
               } else {
                 // If buffer is too large, flush immediately
-                flushChannelBuffer(chan, channel);
+                chan = await flushChannelBuffer(chan, channel);
+                chan.messageId = "";
+
                 // Set new chunk in buffer
                 channelBuffers.set(chan.channelId, {
                   buffer: chunk,
@@ -151,8 +146,8 @@ docker.listContainers({ all: true }, async function (err, containers) {
 
               // If there's no active timer, set one to flush after a delay
               if (!timer) {
-                const newTimer: NodeJS.Timer = setTimeout(() => {
-                  flushChannelBuffer(chan, channel);
+                const newTimer: NodeJS.Timer = setTimeout(async () => {
+                  chan = await flushChannelBuffer(chan, channel);
                 }, 500); // Adjust delay as needed for optimal batching
 
                 channelBuffers.set(chan.channelId, {
