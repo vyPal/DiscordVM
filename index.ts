@@ -3,6 +3,7 @@ import {
   Client,
   Events,
   GatewayIntentBits,
+  Message,
   PermissionsBitField,
 } from "discord.js";
 import Docker from "dockerode";
@@ -74,37 +75,90 @@ docker.listContainers({ all: true }, async function (err, containers) {
           console.log("Attached to container");
           stream.setEncoding("utf8");
 
-          stream.on("data", async function (chunk: any) {
-            console.log(chunk);
+          // Buffer for each channel to store pending data
+          const channelBuffers = new Map<
+            string,
+            { buffer: string; timer: NodeJS.Timer | null }
+          >();
+
+          // Send buffer content if it exceeds 2000 characters or after a set interval (e.g., 500 ms)
+          function flushChannelBuffer(chan: any, channel: any) {
+            if (channelBuffers.has(chan.channelId)) {
+              const { buffer } = channelBuffers.get(chan.channelId)!;
+
+              if (buffer.length === 0) return;
+
+              // Send or edit the message based on message ID
+              if (chan.messageId !== "") {
+                channel.messages
+                  .fetch(chan.messageId)
+                  .then((msg: Message) => msg.edit("```" + buffer + "```"))
+                  .catch(console.error);
+              } else {
+                channel
+                  .send("```" + buffer + "```")
+                  .then((msg: any) => {
+                    chan.messageId = msg.id;
+                  })
+                  .catch(console.error);
+              }
+
+              // Clear buffer after sending
+              channelBuffers.set(chan.channelId, { buffer: "", timer: null });
+            }
+          }
+
+          stream.on("data", function (chunk: any) {
+            // Clean up the chunk
+            chunk = chunk.replace(
+              /(\x1b\[[0-9;?]*[A-Za-z])|(\x1b\][^\x07]*\x07)|(\x1b[>=])/g,
+              ""
+            );
+
             for (let chan of channelIds) {
               let channel = client.channels.cache.get(chan.channelId);
-              if (channel == null) {
-                console.error("Channel not found");
-                process.exit(1);
+              if (
+                !channel ||
+                typeof channel === "undefined" ||
+                !channel.isSendable()
+              ) {
+                console.error("Channel not found or not sendable");
+                continue;
               }
-              if (typeof channel === "undefined") {
-                console.error("Channel not found");
-                process.exit(1);
+
+              // Initialize buffer and timer for the channel if not present
+              if (!channelBuffers.has(chan.channelId)) {
+                channelBuffers.set(chan.channelId, { buffer: "", timer: null });
               }
-              if (channel.isSendable()) {
-                chunk = chunk.replace(
-                  /(\x1b\[[0-9;?]*[A-Za-z])|(\x1b\][^\x07]*\x07)|(\x1b[>=])/g,
-                  ""
-                );
-                if (chan.messageId !== "") {
-                  if (chan.lastContent.length + chunk.length + 6 >= 2000) {
-                    let msg = await channel.send("```" + chunk + "```");
-                    chan.messageId = msg.id;
-                    chan.lastContent = chunk;
-                  } else {
-                    let msg = await channel.messages.fetch(chan.messageId);
-                    chan.lastContent += chunk;
-                    msg.edit("```" + chan.lastContent + "```");
-                  }
-                } else {
-                  let msg = await channel.send("```" + chunk + "```");
-                  chan.messageId = msg.id;
-                }
+
+              const { buffer, timer } = channelBuffers.get(chan.channelId)!;
+
+              // Append chunk to buffer if it doesn't exceed 2000 characters
+              if (buffer.length + chunk.length < 2000) {
+                channelBuffers.set(chan.channelId, {
+                  buffer: buffer + chunk,
+                  timer,
+                });
+              } else {
+                // If buffer is too large, flush immediately
+                flushChannelBuffer(chan, channel);
+                // Set new chunk in buffer
+                channelBuffers.set(chan.channelId, {
+                  buffer: chunk,
+                  timer: null,
+                });
+              }
+
+              // If there's no active timer, set one to flush after a delay
+              if (!timer) {
+                const newTimer: NodeJS.Timer = setTimeout(() => {
+                  flushChannelBuffer(chan, channel);
+                }, 500); // Adjust delay as needed for optimal batching
+
+                channelBuffers.set(chan.channelId, {
+                  buffer: buffer + chunk,
+                  timer: newTimer,
+                });
               }
             }
           });
